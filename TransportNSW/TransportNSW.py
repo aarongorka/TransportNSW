@@ -26,6 +26,8 @@ class TransportNSW(object):
         self.route = None
         self.destination = None
         self.api_key = None
+        self.excluded_means = []
+        self.timeout = 10
         self.info = {
             ATTR_STOP_ID: 'n/a',
             ATTR_ROUTE: 'n/a',
@@ -36,27 +38,43 @@ class TransportNSW(object):
             ATTR_MODE: 'n/a'
             }
 
-    def get_departures(self, stop_id, route, destination, api_key):
+    def get_departures(self, stop_id, route, destination, api_key, excluded_means, timeout):
         """Get the latest data from Transport NSW."""
         self.stop_id = stop_id
         self.route = route
         self.destination = destination
         self.api_key = api_key
+        self.excluded_means = excluded_means
 
         # Build the URL including the STOP_ID and the API key
-        url = \
-            'https://api.transport.nsw.gov.au/v1/tp/departure_mon?' \
-            'outputFormat=rapidJSON&coordOutputFormat=EPSG%3A4326&' \
-            'mode=direct&type_dm=stop&name_dm=' \
-            + self.stop_id \
-            + '&departureMonitorMacro=true&TfNSWDM=true&version=10.2.1.42'
+        url = 'https://api.transport.nsw.gov.au/v1/tp/departure_mon'
         auth = 'apikey ' + self.api_key
         header = {'Accept': 'application/json', 'Authorization': auth}
+
+        if len(excluded_means) > 0:
+            params_excluded_means = {
+                "excludedMeans": "checkbox",
+                **{"exclMOT_{}".format(x): 1 for x in self.excluded_means}
+            }
+        else:
+            params_excluded_means = {}
+
+        params = {
+            "outputFormat": "rapidJSON",
+            "coordOutputFormat": "EPSG:4326",
+            "mode": "direct",
+            "type_dm": "stop",
+            "name_dm": self.stop_id,
+            "departureMonitorMacro": "true",
+            "TfNSWDM": "true",
+            "version": "10.2.1.42",
+            **params_excluded_means,
+        }
 
         # Send the query and return error if something goes wrong
         # Otherwise store the response
         try:
-            response = requests.get(url, headers=header, timeout=10)
+            response = requests.get(url, params=params, headers=header, timeout=timeout)
         except:
             logger.warning("Network or Timeout error")
             return self.info
@@ -83,8 +101,8 @@ class TransportNSW(object):
         monitor = []
         if self.destination != '':
             for i in range(len(result['stopEvents'])):
-                destination = result['stopEvents'][i]['transportation']['destination']['name']
-                if destination == self.destination:
+                destination = result['stopEvents'][i]['transportation']['destination']
+                if destination['name'] == self.destination or destination['id'] == self.destination:
                     event = self.parseEvent(result, i)
                     if event != None:
                         monitor.append(event)

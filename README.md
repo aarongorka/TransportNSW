@@ -44,7 +44,25 @@ journey = tnsw.get_departures('209516', '', '', 'YOUR_API_KEY')
 Setting a destination will return all lines going there from the stop_id. Example for ferries leaving Balmain Warf towards Circular Quay 
 **Code:**
 ```python
-journey = tnsw.get_departures('10102008','','Circular Quay' 'YOUR_API_KEY')
+journey = tnsw.get_departures('10102008', '', 'Circular Quay', 'YOUR_API_KEY')
+```
+
+Alternatively, destination can be set to a stop ID if the name is ambiguous or difficult to match against. For example, Central can be named e.g. "Emu Plains via Central", "Hornsby via Central", etc. depending on the "route" (train line). This will show all departures from Chatswood to Central, regardless of route:
+**Code:**
+```python
+journey = tnsw.get_departures('206710', '', '10101100', 'YOUR_API_KEY')
+```
+
+Optionally, methods of transport can also be ignored by passing a list of one or more methods (1 = train, 2 = metro, 4 = light rail, 5 = bus, 7 = coach, 9 = ferry, 11 = school bus). For example, to ignore buses going from Chatswood to Central:
+**Code:**
+```python
+journey = tnsw.get_departures('206710', '', '10101100', 'YOUR_API_KEY', ["5"])
+```
+
+Optionally, a timeout (specified in seconds) can be passed if you're having issues with the default timeout of 10 seconds. For example, to set the timeout to 20 seconds:
+**Code:**
+```python
+journey = tnsw.get_departures('206710', '', '10101100', 'YOUR_API_KEY', ["5"], 20)
 ```
 
 ### Errors
