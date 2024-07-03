@@ -1,5 +1,5 @@
 """A module to query Transport NSW (Australia) departure times."""
-from datetime import datetime
+from datetime import datetime, timezone
 import requests.exceptions
 import requests
 import logging
@@ -20,15 +20,16 @@ class TransportNSW(object):
     # The application requires an API key. You can register for
     # free on the service NSW website for it.
 
-    def __init__(self):
-        """Initialize the data object with default values."""
-        self.stop_id = None
-        self.route = None
-        self.destination = None
-        self.api_key = None
-        self.excluded_means = []
-        self.timeout = 10
-        self.info = {
+    def __init__(self, api_key, timeout=10):
+        """Initialize required parameters."""
+        self.api_key = api_key
+        self.timeout = timeout
+
+    def get_departures(self, stop_id, route=None, destination=None, excluded_means=[]):
+        """Get data about a departure from Transport NSW."""
+
+        # Default return value
+        info = {
             ATTR_STOP_ID: 'n/a',
             ATTR_ROUTE: 'n/a',
             ATTR_DUE_IN: 'n/a',
@@ -38,23 +39,15 @@ class TransportNSW(object):
             ATTR_MODE: 'n/a'
             }
 
-    def get_departures(self, stop_id, route, destination, api_key, excluded_means, timeout):
-        """Get the latest data from Transport NSW."""
-        self.stop_id = stop_id
-        self.route = route
-        self.destination = destination
-        self.api_key = api_key
-        self.excluded_means = excluded_means
-
         # Build the URL including the STOP_ID and the API key
         url = 'https://api.transport.nsw.gov.au/v1/tp/departure_mon'
         auth = 'apikey ' + self.api_key
-        header = {'Accept': 'application/json', 'Authorization': auth}
+        headers = {'Accept': 'application/json', 'Authorization': auth}
 
         if len(excluded_means) > 0:
             params_excluded_means = {
                 "excludedMeans": "checkbox",
-                **{"exclMOT_{}".format(x): 1 for x in self.excluded_means}
+                **{"exclMOT_{}".format(x): 1 for x in excluded_means}
             }
         else:
             params_excluded_means = {}
@@ -64,7 +57,8 @@ class TransportNSW(object):
             "coordOutputFormat": "EPSG:4326",
             "mode": "direct",
             "type_dm": "stop",
-            "name_dm": self.stop_id,
+            "name_dm": stop_id,
+            "nameKey_dm": "$USEPOINT$",
             "departureMonitorMacro": "true",
             "TfNSWDM": "true",
             "version": "10.2.1.42",
@@ -74,16 +68,16 @@ class TransportNSW(object):
         # Send the query and return error if something goes wrong
         # Otherwise store the response
         try:
-            response = requests.get(url, params=params, headers=header, timeout=timeout)
+            response = requests.get(url, params=params, headers=headers, timeout=self.timeout)
         except:
-            logger.warning("Network or Timeout error")
-            return self.info
+            logger.error("Network or Timeout error")
+            return info
 
         # If there is no valid request (e.g. http code 200)
         # log error and return empty object
         if response.status_code != 200:
             logger.warning("Error with the request sent; check api key")
-            return self.info
+            return info
 
         # Parse the result as a JSON object
         result = response.json()
@@ -94,26 +88,26 @@ class TransportNSW(object):
             result['stopEvents']
         except KeyError:
             logger.warning("No stop events for this query")
-            return self.info
+            return info
 
         # Set variables
         maxresults = 1
         monitor = []
-        if self.destination != '':
+        if destination != '':
             for i in range(len(result['stopEvents'])):
-                destination = result['stopEvents'][i]['transportation']['destination']
-                if destination['name'] == self.destination or destination['id'] == self.destination:
+                result_destination = result['stopEvents'][i]['transportation']['destination']['name']
+                if result_destination == destination:
                     event = self.parseEvent(result, i)
                     if event != None:
                         monitor.append(event)
                     if len(monitor) >= maxresults:
                         # We found enough results, lets stop
                         break
-        elif self.route != '':
+        elif route != '':
             # Find the next stop events for a specific route
             for i in range(len(result['stopEvents'])):
                 number = result['stopEvents'][i]['transportation']['number']
-                if number == self.route:
+                if number == route:
                     event = self.parseEvent(result, i)
                     if event != None:
                         monitor.append(event)
@@ -123,14 +117,14 @@ class TransportNSW(object):
         else:
             # No route defined, find any route leaving next
             for i in range(0, maxresults):
-                event = self.parseEvent(result, i)
+                event = parseEvent(result, i)
                 if event != None:
                     monitor.append(event)
 
         # If the monitor object is defined, updated the return object with core infos
         if monitor:
-            self.info = {
-                ATTR_STOP_ID: self.stop_id,
+            info = {
+                ATTR_STOP_ID: stop_id,
                 ATTR_ROUTE: monitor[0][0],
                 ATTR_DUE_IN: monitor[0][1],
                 ATTR_DELAY: monitor[0][2],
@@ -138,7 +132,7 @@ class TransportNSW(object):
                 ATTR_DESTINATION: monitor[0][6],
                 ATTR_MODE: monitor[0][7]
                 }
-        return self.info
+        return info
 
     def parseEvent(self, result, i):
         """Parse the current event and extract data."""
