@@ -28,6 +28,8 @@ class TransportNSW(object):
     def get_departures(self, stop_id, route=None, destination=None, excluded_means=[]):
         """Get data about a departure from Transport NSW."""
 
+        logger.debug("Getting info about a departure...")
+
         # Default return value
         info = {
             ATTR_STOP_ID: 'n/a',
@@ -65,13 +67,8 @@ class TransportNSW(object):
             **params_excluded_means,
         }
 
-        # Send the query and return error if something goes wrong
-        # Otherwise store the response
-        try:
-            response = requests.get(url, params=params, headers=headers, timeout=self.timeout)
-        except:
-            logger.error("Network or Timeout error")
-            return info
+        logger.debug(f"Sending request with params: {params}")
+        response = requests.get(url, params=params, headers=headers, timeout=self.timeout)
 
         # If there is no valid request (e.g. http code 200)
         # log error and return empty object
@@ -81,6 +78,7 @@ class TransportNSW(object):
 
         # Parse the result as a JSON object
         result = response.json()
+        logger.debug("Got a response and parsed JSON.")
 
         # If there is no stop events for the query
         # log an error and return empty object
@@ -93,23 +91,23 @@ class TransportNSW(object):
         # Set variables
         maxresults = 1
         monitor = []
-        if destination != '':
+        if destination is not None:
             for i in range(len(result['stopEvents'])):
                 result_destination = result['stopEvents'][i]['transportation']['destination']['name']
                 if result_destination == destination:
                     event = self.parseEvent(result, i)
-                    if event != None:
+                    if event is not None:
                         monitor.append(event)
                     if len(monitor) >= maxresults:
                         # We found enough results, lets stop
                         break
-        elif route != '':
+        elif route is not None:
             # Find the next stop events for a specific route
             for i in range(len(result['stopEvents'])):
                 number = result['stopEvents'][i]['transportation']['number']
                 if number == route:
                     event = self.parseEvent(result, i)
-                    if event != None:
+                    if event is not None:
                         monitor.append(event)
                     if len(monitor) >= maxresults:
                         # We found enough results, lets stop
@@ -117,8 +115,8 @@ class TransportNSW(object):
         else:
             # No route defined, find any route leaving next
             for i in range(0, maxresults):
-                event = parseEvent(result, i)
-                if event != None:
+                event = self.parseEvent(result, i)
+                if event is not None:
                     monitor.append(event)
 
         # If the monitor object is defined, updated the return object with core infos
@@ -132,6 +130,7 @@ class TransportNSW(object):
                 ATTR_DESTINATION: monitor[0][6],
                 ATTR_MODE: monitor[0][7]
                 }
+        logger.debug(f"Returning data: {info}")
         return info
 
     def parseEvent(self, result, i):
@@ -144,7 +143,7 @@ class TransportNSW(object):
         planned = datetime.strptime(result['stopEvents'][i]
             ['departureTimePlanned'], fmt)
         destination = result['stopEvents'][i]['transportation']['destination']['name']
-        mode = self.get_mode(result['stopEvents'][i]['transportation']['product']['class'])
+        mode = get_mode(result['stopEvents'][i]['transportation']['product']['class'])
         # Unless realtime data is available the plannned is equal to estimated time
         estimated = planned
         if 'isRealtimeControlled' in result['stopEvents'][i]:
@@ -182,18 +181,6 @@ class TransportNSW(object):
         else:                       # leaving earlier
             delay = round((planned - estimated).seconds / 60) * -1
         return delay
-
-    def get_mode(self, iconId):
-        """Map the iconId to proper modes string."""
-        modes = {
-            1: "Train",
-            4: "Lightrail",
-            5: "Bus",
-            7: "Coach",
-            9: "Ferry",
-            11: "Schoolbus"
-        }
-        return modes.get(iconId, None)
 
 
     def get_trip(self, origin_stop_id, destination_stop_id, excluded_means=[]):
@@ -260,11 +247,10 @@ class TransportNSW(object):
             logger.warning("No journeys for this query")
             return info
 
-        # Set variables
-        maxresults = 1
-        monitor = []
         for journey in journeys:
             origin = journey["legs"][0]["origin"]
+            # we'll try get an estimate if there's any data (presumably from delays, etc.), otherwise we'll just provide planned
+            # and sometimes there's no specific arrival time, in which case we'll fall back to departure (TODO: estimate arrival time from departure?)
             time_estimated = datetime.fromisoformat(origin.get("departureTimeEstimated") or origin.get("departureTimePlanned") or origin.get("arrivalTimeEstimated") or origin.get("arrivalTimePlanned"))
             time_planned = datetime.fromisoformat(origin.get("departureTimePlanned") or origin.get("arrivalTimePlanned"))
             time_now = datetime.now(timezone.utc)
@@ -272,23 +258,43 @@ class TransportNSW(object):
             if journey["legs"][0].get("isRealtimeControlled") is not None:
                 info[ATTR_REALTIME] = journey["legs"][0]["isRealtimeControlled"]
 
+            logger.debug(f"Calculating due from estimate \"{time_estimated}\" (UTC) and current time \"{time_now}\" (UTC)")
+            due = (time_estimated - time_now).seconds / 60
+            logger.debug(f"Calculating delay from estimate \"{time_estimated}\" (UTC) and planned arrival time \"{time_planned}\" (UTC)")
+            delay = (time_estimated - time_planned).seconds / 60
+
             info[ATTR_STOP_ID] = origin_stop_id
-            info[ATTR_ROUTE] = ",".join([leg["transportation"]["name"] for leg in journey["legs"]])
-            info[ATTR_DUE_IN] = round((time_estimated - time_now).seconds / 60)
-            info[ATTR_DELAY] = round((time_estimated - time_planned).seconds / 60)
+            info[ATTR_ROUTE] = ",".join([leg["transportation"].get("name", "") for leg in journey["legs"]])
+            if 0 < due < 1439:
+                logger.debug(f"Calculated due as \"{due}\"")
+                info[ATTR_DUE_IN] = str(due)
+            else:
+                logger.debug(f"Calculated due as \"{due}\", returning 'n/a' instead")
+                info[ATTR_DUE_IN] = 'n/a'
+            if 0 < delay < 1439:
+                logger.debug(f"Calculated delay as \"{delay}\"")
+                info[ATTR_DELAY] = str(delay)
+            else:
+                logger.debug(f"Calculated delay as \"{delay}\", returning 'n/a' instead")
+                info[ATTR_DELAY] = 'n/a'
             info[ATTR_DESTINATION] = destination_stop_id
-            info[ATTR_MODE] = ",".join(set([self.get_mode(x["transportation"]["product"]["class"]) for x in journey["legs"]]))
+            logger.debug(f"Attempting to get mode from {[x.get("transportation", {}).get("product", {}) for x in journey["legs"]]}")
+            info[ATTR_MODE] = ",".join([y for y in set([get_mode(x["transportation"]["product"]["class"]) for x in journey["legs"]]) if y is not None])
             return info
         return info
 
-    def get_mode(self, iconId):
-        """Map the iconId to proper modes string."""
-        modes = {
-            1: "Train",
-            4: "Lightrail",
-            5: "Bus",
-            7: "Coach",
-            9: "Ferry",
-            11: "Schoolbus"
-        }
-        return modes.get(iconId, None)
+def get_mode(iconId):
+    """Map the iconId to proper modes string."""
+
+    logger.debug(f"Got get_mode request for {iconId}")
+    modes = {
+        1: "Train",
+        2: "Metro",
+        4: "Lightrail",
+        5: "Bus",
+        7: "Coach",
+        9: "Ferry",
+        11: "Schoolbus",
+        99: "Footpath",
+    }
+    return modes.get(iconId, None)
